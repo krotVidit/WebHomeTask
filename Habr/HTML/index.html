@@ -122,7 +122,7 @@
                     Task.WaitAll(tasks);
                   }
                   </code></pre>
-      <div class="отступ"></div>
+      <br>
       <pre class="table">
 
          |      Pool |        Mean |     Allocated |
@@ -229,17 +229,17 @@
       </p>
 
       <pre class="code"><code>
-         // thread 1
-var pool = ArrayPool<long>.Shared;
-var arr1 = pool.Rent(1024*1024*1024);
-pool.Return(arr1);
+ // thread 1
+ var pool = ArrayPool<long>.Shared;
+ var arr1 = pool.Rent(1024*1024*1024);
+ pool.Return(arr1);
 
-Task.Run(() =>
-{
-  // thread 2
-  var arr2 = pool.Rent(1024 * 1024 * 1024);
-  Console.WriteLine(arr1 == arr2);
-}).Wait();
+ Task.Run(() =>
+ {
+   // thread 2
+   var arr2 = pool.Rent(1024 * 1024 * 1024);
+   Console.WriteLine(arr1 == arr2);
+ }).Wait();
       </code></pre>
 
       <h3 class="mineTitle">Очистка памяти при GC</h3>
@@ -389,7 +389,7 @@ Event Microsoft-Windows-DotNETRuntime/Contention/Start
          Пример стектрейса из <code class="sText">dotnet dump:</code></p>
 
 
-      <pre class="code"><code class="scroll-x">
+      <pre class="code"><code class>
  Call Site
 [HelperMethodFrame: 0000004e2f77f488] System.Threading.Thread.SleepInternal(Int32)
 System.Threading.Thread.Sleep(Int32) [/_/src/libraries/System.Private.CoreLib/src/System/Threading/Thread.cs @ 375]

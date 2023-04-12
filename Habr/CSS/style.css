@@ -59,19 +59,22 @@ body {
    background-color: #FBFDFF;
    color: #212529;
    font-size: 0.875em;
-   font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
-   padding-left: 0;
+   font-family: Consolas;
+   padding: 1.375em;
    border: 1px solid #EAECEF;
 
 
 }
 
 .table {
-   font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+   font-family: Consolas;
    background-color: #FBFDFF;
    border: 0.0625em solid #EAECEF;
-   text-align: left;
-   font-family: Menlo, Monaco, Consolas, "Courier New", Courier, monospace;
+   font-style: normal;
+   line-height: 1.375em;
+   color: #4d4d4c;
+   width: 400;
+   padding: 1.375em;
 
 }
 
