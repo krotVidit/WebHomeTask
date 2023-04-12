@@ -103,11 +103,11 @@
                   public void ArrayPoolConcurrent()
                   {
                     var tasks = new Task[Threads];
-                    for (int i = 0; i < Threads; i++)
+                    for (int i = 0; i &lt; Threads; i++)
                     {
                       tasks[i] = Task.Run(() =>
                       {
-                        for (int j = 0; j < Iterations; j++)
+                        for (int j = 0; j &lt; Iterations; j++)
                         {
                           var arr = pool.Rent(ArraySize);
                   
@@ -615,8 +615,8 @@ System.Buffers.ConfigurableArrayPool`1[[System.Byte, System.Private.CoreLib]].Re
          <li><code class="bText"> Мой канал (блог о .NET)</code></li>
       </ul>
 
-      <h3 class="webT">Теги:<code class="bText">.NETc#memory managementpoolingpool</code> </h3>
-      <h3 class="webT">Хабы:<code class="bText">Высокая производительностьПрограммирование.NETC#</code> </h3>
+      <h3 class="webT">Теги:<code class="bText">.NET, c#, memory management, pooling, pool</code> </h3>
+      <h3 class="webT">Хабы:<code class="bText">Высокая производительность, Программирование, .NET , C#</code> </h3>
 
 
 
