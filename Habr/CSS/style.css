@@ -1,0 +1,142 @@
+body {
+   font-family: Arial;
+   font-style: normal;
+   font-weight: 25em;
+   line-height: 1.5625em;
+   font-size: 1em;
+   color: #111111;
+   margin: 3.125em auto;
+   background-color: #F5F5F5;
+}
+
+.title {
+   font-family: "Fira Sans" -500, sans-serif;
+   font-size: 1.5em;
+   font-style: normal;
+   font-weight: 500px;
+   color: #333333;
+   line-height: 31px;
+}
+
+.podtext {
+   cursor: pointer;
+   font-family: Arial;
+   font-weight: 500;
+   font-size: 13px;
+   line-height: 1.5em;
+   font-style: normal;
+   color: gray;
+}
+
+.mineTitle {
+   font-family: "Fira Sans", sans-serif;
+   width: 500;
+   font-style: normal;
+   font-size: 1.25em;
+   height: 26px;
+   color: #111111;
+}
+
+.container {
+   max-width: 52.5em;
+   background-color: white;
+   box-shadow: 0 0 10px #ddd;
+   position: relative;
+   max-width: 52.5em;
+   margin: 0 auto;
+   padding: 1.25em 1.875em;
+}
+
+.imagel img {
+
+   max-width: 52.5em;
+   margin: 0 auto;
+
+
+}
+
+.code {
+   background-color: #FBFDFF;
+   color: #212529;
+   font-size: 14px;
+   font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+   padding-left: 0;
+   border: 1px solid #EAECEF;
+
+}
+
+.table {
+   font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+   background-color: #FBFDFF;
+   border: 1px solid #EAECEF;
+   text-align: left;
+   font-family: Menlo, Monaco, Consolas, "Courier New", Courier, monospace;
+
+}
+
+.code-select {
+   background-color: #FBFDFF;
+   color: #212529;
+   font-size: 14px;
+   font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+   padding-left: 0;
+   border: 1px solid #EAECEF;
+   display: none;
+
+}
+
+
+
+.code-triger {
+   cursor: pointer;
+   color: #82B8D5;
+   display: block;
+}
+
+.code-triger .code-toggle-checkbox {
+   display: none;
+}
+
+.code-triger .code-select {
+   display: none;
+}
+
+.code-triger .code-toggle-checkbox:checked+.code-select {
+   display: block;
+}
+
+.code-triger .code-toggle-checkbox:checked~.code-triger {
+   display: none;
+}
+
+.code-triger .code-toggle-checkbox:not(:checked)~.code-select {
+   display: none;
+}
+
+
+.sText {
+   font-family: Menlo - 400;
+   font-size: 16px;
+   font-weight: 400;
+   line-height: 1.5625em;
+   color: #111111;
+   font-style: normal;
+   background-color: #fafafae8;
+}
+
+.bText {
+   cursor: pointer;
+   color: #82B8D5;
+   font-family: apple-system, BlinkMacSystemFont, Arial, sans-serif;
+   font-style: normal;
+   font-size: 17px;
+   line-height: 26px;
+   font-weight: 400;
+}
+
+.webT {
+   color: #444444;
+   font-size: 1em;
+   font-family: Arial;
+
+}

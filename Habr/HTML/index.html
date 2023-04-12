@@ -1,0 +1,626 @@
+<!doctype html>
+<html>
+
+<head>
+   <meta charset="utf-8">
+   <link rel="stylesheet" href="D:\VS CODE FILE\Habr\CSS\style.css">
+   <title> копия статьи </title>
+</head>
+
+<body>
+   <div class="container">
+      <h2 class="title"> ArrayPool&lt;T&gt;: подводные камни</h2>
+      <h5 class="podtext">Высокая производительность *, Программирование*, .NET*, C#*</h5>
+
+
+      <div class="imagel">
+         <img src="D:\VS CODE FILE\Habr\IMG\imagel.jpg" alt="not found">
+      </div>
+
+      <p>Автоматическая сборка мусора упрощает разработку программ, избавляя от необходимости отслеживать жизненный цикл
+         объектов и удалять их вручную. Однако, чтобы сборщик мусора был полезным инструментом, а не главным врагом на
+         пути
+         к высокой производительности — иногда имеет смысл помогать ему, оптимизируя частые аллокации и аллокации
+         больших
+         объектов.</p>
+
+      <p>Для уменьшения аллокаций в современном .NET предусмотрены <code
+            class="sText">Span/Memory&lt;T&gt;,stackalloc&lt;/T&gt;</code> с
+         поддержкой
+         Span, структуры
+         и другие средства. Но если без объекта в куче не обойтись, например, если объект слишком большой для стека, или
+         используется в асинхронном коде — этот объект можно переиспользовать. И для самых крупных объектов — массивов,
+         в .NET встроены несколько реализаций <code class="selectedText"> ArrayPool&lt;T&gt;.</code></p>
+
+      <p>В этой статье я расскажу о внутреннем устройстве реализаций <code
+            class="sText">ArrayPool&lt;T&gt; в .NET</code>, о подводных камнях, которые
+         могут
+         сделать пулинг неэффективным, о concurrent-структурах данных, а также о пулинге объектов, отличных от
+         массивов.
+      </p>
+
+      <h3 class="miniTitle">Allocator vs Pool</h3>
+
+      <p>Пул можно рассматривать как аллокатор объектов. У них одинаковый интерфейс с двумя методами, выполняющими
+         функции
+         <code class="sText"> new и delete </code>. Хорошая реализация нативного аллокатора также переиспользует память:
+         при <code class="sText">delete </code> участок памяти не
+         сразу отдаётся операционной системе обратно, а переиспользуется для новых объектов внутри программы, т.е.
+         работает
+         как пул.
+      </p>
+
+      <p>Возникает вопрос, зачем делать пул managed-объектов, вместо перехода на нативный аллокатор?</p>
+
+      <ul>
+         <li>Это требует меньших изменений в коде, который эти объекты использует. Также, <code class="bText">некоторые
+            </code> API принимают <code class="sText"> ArraySegment<T>, а не Memory&it;T&gt;&it;/T&gt; </code>
+         </li>
+
+         <li>Это помогает сохранить код кроссплатформенным. Использование стороннего аллокатора обычно предполагает
+            подключение нативной <code class="bText"> библиотеки.</code> </li>
+
+         <li>Managed-объекты могут иметь ссылки на другие managed-объекты. Ссылаться на managed-объекты из памяти,
+            которой
+            не управляет сборщик мусора нельзя — при дефрагментации кучи и перемещении объектов такие ссылки не будут
+            обновлены и станут невалидными.</li>
+      </ul>
+
+      <p>Отличие пула от аллокатора в том, что пулу можно не сохранять часть объектов, например, при превышении
+         вместимости
+         — тогда их соберёт сборщик мусора. Аллокатор же должен гарантировать отсутствие утечек памяти.</p>
+
+      <h3 class="miniTitle">ArrayPool&lt;T&gt;
+      </h3>
+
+      <p>В .NET встроены две разные реализации абстрактного класса <code class="sText"> ArrayPool&lt;T&gt;.</code> Т.к.
+         невозможно сохранить массивы для
+         каждого из размера по-отдельности (их будет слишком много), при вызове <code class="sText">.Rent(N)</code> пул
+         возвращает массив
+         размера N
+         или больше. Внутри пул хранит массивы с длинами, равными степеням двойки.</p>
+
+      <p>Первая — для пулов, создающихся с помощью
+         <code class="sText"> ArrayPool&lt;T&gt;.Create()/ArrayPool&lt;T&gt;.Create(maxArrayLength,
+               maxArraysPerBucket).</code>
+         <br>Вторая — статический <code class="sText"> ArrayPool&lt;T&gt;.Shared.</code> Также можно сделать свою
+         реализациюp
+         <code class="sText"> ArrayPool&lt;T&gt; </code>
+      </p>
+
+      <p> Разбор отличий пулов, добываемых через <code
+            class="sText">ArrayPool&lt;T&gt;.Shared и ArrayPool&lt;T&gt;.Create(...)</code> начнём с бенчмарка.
+         Кроме
+         этих реализаций, протестируем также реализацию, которая ничего не переиспользует, а просто аллоцирует
+         новые
+         массивы и бросает их на совесть GC. </p>
+
+      <pre class="code"><code>
+                  // Threads = 16
+                  // Iterations = 64*1024
+                  // ArraySize = 1024
+                  [Benchmark]
+                  public void ArrayPoolConcurrent()
+                  {
+                    var tasks = new Task[Threads];
+                    for (int i = 0; i < Threads; i++)
+                    {
+                      tasks[i] = Task.Run(() =>
+                      {
+                        for (int j = 0; j < Iterations; j++)
+                        {
+                          var arr = pool.Rent(ArraySize);
+                  
+                          // имитация использования массива сложностью O(ArraySize)
+                          // не просто так же он нам нужен, чтобы сразу вернуть в пул?
+                          Random.Shared.NextBytes(arr);
+                          pool.Return(arr);
+                        }
+                      });
+                    }
+                  
+                    Task.WaitAll(tasks);
+                  }
+                  </code></pre>
+      <div class="отступ"></div>
+      <pre class="table">
+
+         |      Pool |        Mean |     Allocated |
+         |----------:|------------:|--------------:|
+         |    Create |   170.09 ms |       2.77 KB |
+         |    Shared |    14.96 ms |       2.41 KB |
+         |       new |    69.77 ms | 1072085.02 KB |
+         </pre>
+      <p>Код, не связанный с работой с пулом занимает ~13 ms, что было замерено отдельно.
+      </p>
+
+      <p>
+         Пул, созданный через <code class="sText">ArrayPool&lt;byte&gt;.Create() </code> оказался медленнее даже
+         аллокации (оператора new), и гораздо
+         медленнее <code class="sText"> ArrayPool&lt;byte&gt;.Shared</code> (за вычетом оверхеда). Но не торопитесь
+         делать выводы по одному бенчмарку,
+         тестирующему лишь частный случай, и списывать эту реализацию пула — далее мы разберёмся, как эти пулы
+         устроены внутри, и почему результат получился таким</p>
+
+      <p>
+         Отмечу, что пул — лишь вспомогательный компонент, и бенчмаркать нужно алгоритм или сервис, в котором пул
+         используется — сравнивать, улучшилась ли производительность от переиспользования объектов. Да и самая быстрая
+         реализация пулинга — та, которая не содержит никакой синхронизации с другими потоками. В однопоточном коде
+         проще сохранить массив в поле класса и всегда использовать его, без всяких пулов. А если нужно хранить
+         несколько объектов в однопоточном алгоритме, то подойдут обычные <code
+            class="sText">Queue&lt;T&gt;/Stack&lt;T&gt;.</p> </code>
+
+      <h3 class="miniTitle">ArrayPool&lt;T&gt;.Create()</h3>
+
+      <div class="imagel">
+         <img src="D:\VS CODE FILE\Habr\IMG\imgA.png" alt="картинка">
+      </div>
+
+      <p>
+         <code class="sText">Методы .Create() и .Create(maxArrayLength, maxArraysPerBucket)</code>создают
+         <code class="sText">ConfigurableArrayPool&lt;T&gt;.</code> Здесь нужно
+         быть осторожным — значение максимальной длины массива в этом пуле по умолчанию — всего лишь<code
+            class="sText"> 1024 * 1024 </code>, при
+         её превышении массивы будут аллоцироваться и не сохраняться в пуле. Поэтому, если <code
+            class="sText"> ArrayPool </code> создаётся для
+         больших массивов — параметры придётся переопределить.
+      </p>
+      <div>
+
+      </div>
+      <p>Реализация <code class="sText"> ConfigurableArrayPool&lt;T&gt; очень <code class="bText">проста</code>:</code>
+      </p>
+      <br>
+      <ul>
+         <li>массивы в пуле сгруппированы по размерам (размер — всегда степень двойки)</li>
+         <li>массивы одного размера хранятся в списке (на основе массива)</li>
+         <li>каждый список защищён от многопоточного доступа с помощью SpinLock</li>
+      </ul>
+      <br>
+
+      <p>Как раз из-за блокировки эта реализация пула не масштабируется на множество потоков. В итоге основным её
+         применением становятся большие массивы, в случае с которыми время работы с пулом пренебрежимо мало по сравнению
+         с обработкой данных, которыми эти массивы заполняются.</p>
+      <div>
+
+      </div>
+
+      <h3 class="miniTitle">ArrayPool&lt;T&gt;.Shared</h3>
+      <div class="imagel">
+         <img src="D:\VS CODE FILE\Habr\IMG\Shared.png" alt="Shared not found">
+      </div>
+      <p>
+         Это статический пул, разделяемый всем кодом в программе. Реализация называется
+         <code class="sText">TlsOverPerCoreLockedStacksArrayPool&lt;T&gt; </code> и на данный момент, никаких настроек
+         не
+         имеет. Максимальный размер
+         массива в пуле — 2^30 элементов. <code class="sText">Tls</code> в названии значит <code
+            class="sText"> ThreadLocalStorage </code>, исходя
+         из этого можно догадаться,
+         за счёт чего этот пул работает быстро в многопоточной среде.
+      </p>
+
+      <p>
+         В этом пуле реализовано двухуровневое хранение объектов. Первый уровень — локальный набор массивов для каждого
+         потока. Хранится в <code class="sText">[ThreadStatic]</code> поле. Доступ к локальной части пула не требует
+         синхронизации с другими
+         потоками. Однако, локально хранится максимум по одному массиву каждого размера. Использование статического поля
+         здесь возможно, т.к. пул глобальный, т.е. создаётся в единственном экземпляре. В нестатическом пуле для этой
+         оптимизации придётся использовать <code class="sText">ThreadLocal.</code></p>
+
+      <p>
+         Второй уровень — разделяемый между потоками. Но в отличие от <code
+            class="sText">ConfigurableArrayPool&lt;T&gt;</code>, для каждого размера
+         хранится не один список массивов, а несколько — по количеству логических ядер (max. <code
+            class="bText">64</code>), каждый из списков
+         защищён отдельной блокировкой. Это снижает конкуренцию между потоками — теперь они идут под разные
+         блокировки, а не под одну. Вместо <code class="sText">SpinLock </code> в реализации <code>Shared</code> пула
+         используется обычный <code class="sText"> lock/Monitor.</code>
+      </p>
+
+      <h3 class="mineTitle">Speed — Memory tradeoff</h3>
+
+      <p>
+         Оптимизация с thread local слотом имеет свою цену: в пуле может скопиться большое количество крупных массивов,
+         раздувая память приложения. В примере ниже первый поток создаёт новый массив и возвращает его в пул. Этот
+         массив попадает в Thread Local слот первого потока. В итоге, при попытке получить массив того же размера из
+         другого потока — переиспользования не произойдёт и будет выделен новый массив. В итоге для больших массивов
+         может быть выгоднее использовать реализацию пула с общим набором объектов для всех потоков.
+      </p>
+
+      <pre class="code"><code>
+         // thread 1
+var pool = ArrayPool<long>.Shared;
+var arr1 = pool.Rent(1024*1024*1024);
+pool.Return(arr1);
+
+Task.Run(() =>
+{
+  // thread 2
+  var arr2 = pool.Rent(1024 * 1024 * 1024);
+  Console.WriteLine(arr1 == arr2);
+}).Wait();
+      </code></pre>
+
+      <h3 class="mineTitle">Очистка памяти при GC</h3>
+
+      <p>
+         Отчасти для решения предыдущей проблемы, в <code class="sText">ArrayPool&lt;T&gt;</code> предусмотрена очистка
+         памяти при сборке мусора. С
+         помощью хака с <code class="bText">финализатором</code> пул узнаёт о срабатываниях сборщика мусора и
+         периодически выбрасывает избыток
+         массивов, помогая освободить память.</p>
+
+      <p>
+         Не всегда это поведение желательное. Преждевременное удаление больших массивов, находящихся в Large Object
+         Heap, может привести к излишней фрагментации кучи. Это ещё один повод задуматься об использовании другого
+         механизма для переиспользования больших массивов.</p>
+
+      <h3 class="mineTitle">Штраф за невозврат массива в пул</h3>
+
+      <p>
+         Бенчмарк, с которого мы начали, в случае <code class="sText">ArrayPool&lt;T&gt;.Shared</code> "пробивает"
+         только первый уровень пулинга — thread
+         local. Возникает вопрос, насколько производителен второй уровень — per core locked stacks, особенно учитывая
+         то, что в нём есть блокировка. Для замера, сделаем бенчмарк, использующий сразу два массива из пула.</p>
+
+      <label class="code-triger">
+         Код бенчмарка
+         <input type="checkbox" class="code-toggle-checkbox">
+         <div class="code-select">
+            <pre>
+                   <code>
+         // Threads = 16
+// Iterations = 1024
+// ArraySize = 1024
+[Benchmark]
+public void ArrayPoolConcurrent_TwoArrays()
+{
+  var tasks = new Task[Threads];
+  for (int i = 0; i < Threads; i++)
+  {
+    tasks[i] = Task.Run(() =>
+    {
+      for (int j = 0; j < Iterations; j++)
+      {
+        var arr1 = pool.Rent(ArraySize);
+        var arr2 = pool.Rent(ArraySize);
+        Random.Shared.NextBytes(arr1);
+        Random.Shared.NextBytes(arr2);
+        pool.Return(arr2);
+        pool.Return(arr1);
+      }
+    });
+  }
+
+  Task.WaitAll(tasks);
+}
+</code>
+</pre>
+         </div>
+      </label>
+
+      <pre class="table"><code>
+         |      Pool |        Mean |      Allocated |
+         |----------:|------------:|---------------:|
+         | Allocator |      138 ms |  2146306.76 KB |
+         |    Create |      230 ms |        2.88 KB |
+         |    Shared |       33 ms |        2.53 KB |
+      </pre></code>
+
+      <p>
+         Нагрузка, не связанная с пулом, заняла 24 ms — второй уровень <code class="sText">Shared</code> пула уже не
+         бесплатен, но пул по
+         прежнему
+         достаточно производителен — это достигается за счёт того, что потоки в бенчмарке берут массивы из разных
+         списков и захватывают разные блокировки — contention не возникает.</p>
+
+      <p>
+         Каждый поток не всегда использует только один список. Если при <code class="sText">.Rent(N)</code> подходящий
+         массив не был найден в
+         "своём" списке, то по кругу обходятся все остальные, лишь после этого аллоцируется новый массив. И если
+         не
+         возвращать массивы в пул обратно, то каждый вызов <code class="sText">.Rent(N)</code> будет по очереди
+         захватывать все блокировки,
+         приводя
+         к большому contention.
+      </p>
+
+      <pre class="table"><code>
+       
+         |            Pool |        Mean | Lock Contentions |     Allocated |
+         |----------------:|------------:|-----------------:|--------------:|
+         |       Allocator |      138 ms |                - | 2146306.76 KB |
+         |          Shared |       33 ms |                - |       2.53 KB |
+         | Shared_NoReturn |      968 ms |        3666.6667 | 2144145.85 KB |
+
+      </code></pre>
+      <p>
+         От этой проблемы есть некоторая "защита". Второй уровень пула (PerCoreLockedStacks) инициализируется
+         только при
+         первом возврате массива в него. Если нигде в программе массивы не возвращаются в пул, то <code
+            class="sText">.Rent(N)</code> будет
+         аллоцировать новый массив без захвата блокировок</p>
+
+      <p>
+         Также, вместимость Shared пула относительно небольшая — 8 массивов каждого размера в каждом
+         PerCoreLockedStacks
+         (т.е. 512 на размер максимум). И если требуется много массивов, каждый из которых будет использоваться
+         долгосрочно — эффекта от пулинга не будет, т.к. неизбежно будут создаваться новые массивы, а потоки будут
+         обходить блокировки в надежде найти хоть что-то в опустошенном пуле.</p>
+
+      <h3 class="mineTitle">Диагностики</h3>
+
+      <p>
+         Для мониторинга работы стандартных реализаций <code class="sText"> ArrayPool&lt;T&gt;</code> предусмотрены
+         события
+         <code class="bText">System.Buffers.ArrayPoolEventSource.</code> Их можно получить через PerfView, dotnet trace,
+         EventListener и
+         другими
+         способами. Основное событие, на которое имеет смысл смотреть — <code class="sText">BufferAllocated</code> —
+         если
+         аллоцируется
+         много
+         новых массивов, значит пулинг неэффективен. Проблему с lock contention в случае с <code
+            class="sText">Shared</code>пулом можно
+         вычислить по событиям <code class="sText">Microsoft-Windows-DotNETRuntime/Contention/Start.</code> Подробнее о
+         диагностике
+         .NET-приложений уже было описано в недавней <code class="bText">статье.</code>
+      </p>
+
+
+      <p>Пример стектрейса из PerfView:</p>
+
+      <pre class="code"><code>
+Event Microsoft-Windows-DotNETRuntime/Contention/Start
+ + module coreclr &lt;&lt;coreclr!?&gt;&gt;
+ + module System.Private.CoreLib.il &lt;&lt;System.Private.CoreLib.il!System.Buffers.TlsOverPerCoreLockedStacksArrayPool`1[System.Byte].Rent(int32)&gt;&gt;;
+|+ module app &lt;&lt;app!PoolExperiments.<NoReturningMethod>b__24_0()&gt;&gt;
+</code> </pre>
+
+      <p>
+         Увы, о неэффективном использовании <code class="bText">SpinLock</code> нет никаких событий. Но о неэффективном
+         использовании
+         <code class="sText">ConfigurableArrayPool&lt;T&gt; </code> можно узнать при профилировании или анализе дампа.
+      </p>
+
+
+      <p>
+         Пример стектрейса из <code class="sText">dotnet dump:</code></p>
+
+
+      <pre class="code"><code class="scroll-x">
+ Call Site
+[HelperMethodFrame: 0000004e2f77f488] System.Threading.Thread.SleepInternal(Int32)
+System.Threading.Thread.Sleep(Int32) [/_/src/libraries/System.Private.CoreLib/src/System/Threading/Thread.cs @ 375]
+System.Threading.SpinWait.SpinOnceCore(Int32) [/_/src/libraries/System.Private.CoreLib/src/System/Threading/SpinWait.cs @ 196]
+System.Threading.SpinLock.ContinueTryEnter(Int32, Boolean ByRef) [/_/src/libraries/System.Private.CoreLib/src/System/Threading/SpinLock.cs @ 359]
+System.Buffers.ConfigurableArrayPool`1+Bucket[[System.Byte, System.Private.CoreLib]].Rent() [/_/src/libraries/System.Private.CoreLib/src/System/Buffers/ConfigurableArrayPool.cs @ 205]
+System.Buffers.ConfigurableArrayPool`1[[System.Byte, System.Private.CoreLib]].Rent(Int32) [/_/src/libraries/System.Private.CoreLib/src/System/Buffers/ConfigurableArrayPool.cs @ 88]
+         </code></pre>
+
+      <h3 class="mineTitle">Пулы других объектов</h3>
+      <p>
+         Пока что речь шла лишь о реализациях <code class sText> ArrayPool&lt;T&gt; </code> — пулах массивов. Иногда
+         требуется переиспользовать не
+         только
+         массивы, но и другие объекты. И их пулинг также имеет свои тонкости.</p>
+      <p>
+         Второй уровень<code class="sText">  ArrayPool&lt;T&gt;.Shared</code> для массивов одного размера — по сути уже
+         потокобезопасный пул
+         одинаковых
+         объектов. Казалось бы, почему не взять его в качестве пула объектов? В некоторых сценариях такой
+         подход
+         будет удачным, но большинство объектов, не являющихся массивами — маленькие. С одной стороны, это
+         увеличивает требования к производительности пула — overhead от пулинга уже не спрятать среди полезной
+         нагрузки. С другой — позволяет не заморачиваться с многопоточностью и сделать
+         <code class="sText"> [ThreadStatic]Stack/Queue&lt;T&gt;</code>
+         пул, локальный для каждого потока. Такой вариант не подходит для объектов, которые могут
+         перемещаться из
+         одного потока в другой, т.к. возникает риск опустошения пула в одном из потоков и переполнения в
+         другом —
+         разницы с аллокацией тогда не будет.
+      </p>
+      <p>
+         Также часто пул объектов реализуют на основе <code class="sText"> ConcurrentQueue &lt;T&gt;.</code> Например,
+         так реализован
+         <code class="sText"> DefaultObjectPool&lt;T&gt;</code>
+         из пакета <code class="bText"> Microsoft.Extensions.ObjectPool</code>, с тем отличием, что в нём есть ещё и
+         первый уровень —
+         поле
+         <code class="sText"> _fastItem </code>под хранение одного объекта. Это поле класса, не статическое, и не
+         <code class="sText">[ThreadStatic]/ThreadLocal.</code>
+         Работа с ним ведётся через <code class="sText">atomic</code> инструкции <code
+            class="sText">(Interlocked).</code>
+      </p>
+
+      <p>
+         Вместо <code class="sText">ConcurrentQueue&lt;T&gt;</code> можно использовать другую структуру данных —
+         <code class="sText">ConcurrentStack&lt;T&gt;</code> или
+         <code class="sText"> ConcurrentBag&lt;T&gt;.</code>
+         Использовать стек не имеет смысла — он аллоцирует по ноде связного списка на каждый элемент, и
+         хуже
+         масштабируется — когда <code class="sText">ConcurrentQueue&lt;T&gt;</code> разрывается потоками с двух разных
+         сторон, вся
+         нагрузка на
+         стек приходится только на один его край, а LIFO-порядок не даёт никаких преимуществ для пула.
+         <code class="sText"> ConcurrentBag&lt;T&gt;</code> работает быстрее в случае, когда добавления и удаления
+         элементов происходят
+         из
+         одного потока за счёт <code class="sText"> ThreadLocal&lt;&gt;</code> внутри, но не догоняет по
+         производительности алгоритм
+         из
+         <code class="sText">&lt;T&gt;.Shared.</code>
+      </p>
+
+      <p>
+
+         Для теста были сделаны несколько реализаций пулов — наивные поверх одной concurrent-коллекции, глобальной
+         <code class="sText"> Stack &lt;T&gt;</code> под локом (с _fastItem слотом и без), отдельным ThreadLocal Stack
+         <T> для каждого потока, также взяты
+            <code class="sText">DefaultObjectPool&lt;T&gt;</code> (и его модификация с <code
+               class="sText"> ThreadLocal</code>) и <code class="sText"> ArrayPool&lt;T&gt;.Shared</code> для сравнения.
+            В качестве объекта использовался массив
+            размером 1 КБ для унификации кода с бенчмарком для <code class="sText"> ArrayPool&lt;T&gt;.</code>
+      </p>
+
+      <pre class="table">
+
+         |                Pool |   Mean | Lock Contentions |   Allocated |
+         |--------------------:|-------:|-----------------:|------------:|
+         |       StackWithLock | 818 ms |        6476.0000 |     3.87 KB |
+         |  StackWithLock+Slot | 685 ms |        3200.0000 |     3.30 KB |
+         |  ConcurrentStackObj | 540 ms |                - | 65539.59 KB |
+         |  ConcurrentQueueObj | 455 ms |                - |     3.82 KB |
+         |   DefaultObjectPool | 320 ms |                - |     2.99 KB |
+         | ThreadLocObjectPool | 208 ms |                - |     2.87 KB |
+         |    ConcurrentBagObj |  77 ms |                - |     2.51 KB |
+         |              Shared |  35 ms |           0.0667 |     2.49 KB |
+         |   ThreadStaticStack |  27 ms |                - |     2.44 KB |
+
+      </pre>
+
+      <p>
+         Структуре данных недостаточно быть lock-free, чтобы быть быстрой — разница с обычной блокировкой
+         оказалась
+         всего ~2 раза. Атомарные инструкции — не магия, хоть они и работают быстрее блокировок, но atomic write
+         масштабируется <code class="bText"> плохо.</code> В итоге для большей производительности следует пользоваться
+         теми же техниками, что в <code class="sText"> ArrayPool&lt;T&gt;.Shared — thread local</code> слоты и
+         шардирование разделяемого между потоками хранилища, чтобы
+         минимизировать любую синхронизацию потоков.
+      </p>
+
+      <p>
+         В критичных для производительности местах внутри <code class="sText">dotnet/runtime</code> реализованы свои
+         пулы. Например, в
+         <code class="bText"> PoolingAsyncValueTaskMethodBuilder</code>, использующимся для снижения числа аллокаций в
+         асинхронном коде,
+         реализован
+         двухуровневый пул — <code class="sText"> [ThreadStatic] </code> слот + слоты по количеству ядер, работа с
+         которыми ведётся через
+         <code class="sText"> Interlocked.</code>
+      </p>
+
+      <h3 class="mineTitle">Bounded queue</h3>
+
+      <p>
+         Может возникнуть желание сделать свой собственный пул. Например, есть подозрение, что мешают блокировки
+         внутри
+         стандартного <code class="sText"> Shared </code> пула — внешне это может проявляться как высокая tail latency в
+         метриках сервиса
+         (какие-то
+         два потока делят один LockedStack — разделение происходит по ProcessorId). Или нужен эффективный пул для
+         объектов с общим хранилищем между потоками.
+      </p>
+
+      <p>
+         Казалось, можно взять <code class="sText"> ArrayPool&lt;T&gt;.Shared</code> и заменить <code
+            class="sText"> LockedStacks</code> на несколько <code class="sText">ConcurrentQueue&lt;T&gt;.</code> Но
+         важной
+         деталью реализаций <code class="sText"> ArrayPool&lt;T&gt;.Shared </code> — поддержка ограничения числа
+         элементов, хранящихся внутри
+         пула. В
+         пулах на основе <code class="sText"> ConcurrentQueue&lt;T&gt;</code> это реализуется с помощью дополнительного
+         счётчика элементов,
+         изменяющегося через Interlocked. Это, во-первых, замедляет работу с очередью, добавляя ещё
+         одну
+         точку синхронизации. Во-вторых, это неэстетично — <code class="sText">ConcurrentQueue&lt;T&gt;</code>
+         реализована поверх
+         internal-класса <code class="sText"> ConcurrentQueue&lt;T&gt;.Segment,</code> который представляет из себя
+         <code class="bText">очередь</code> с
+         ограниченной
+         ёмкостью. В результате, при использовании счётчика bounded-очередь обёрнута в
+         unbounded, а
+         поверх неё реализована bounded-очередь.
+      </p>
+
+      <p>
+         Возникает желание извлечь <code class="sText"> ConcurrentQueue&lt;T&gt;.Segment</code> в отдельный класс и
+         использовать его для реализации
+         пула.
+         Причём, не только у меня. Об этом есть очень старый <code class="bText"> proposal</code> в dotnet/runtime, но,
+         что называется, не
+         договорились. Сам класс <code class="sText"> ConcurrentQueue&lt;T&gt;.Segment</code> легко отделяется от
+         <code class="sText"> ConcurrentQueue&lt;T&gt;</code> и сразу
+         готов к
+         использованию.
+      </p>
+
+      <p>
+         Протестируем такую реализацию. В случае, когда используется по одному LockedStack или очереди на каждое
+         логическое ядро — разницы нет. Но если уменьшить шардирование в 4 раза, становится видна разница между
+         разными
+         вариантами. Это показывает, насколько важно предположение о том, что разные потоки будут пользоваться
+         разными
+         блокировками в структуре <code class="sText"> ArrayPool&lt;T&gt;.Shared </code>, а также то, что казалось бы
+         легковесный <code class="sText"> Interlocked</code> счётчик
+         вокруг очереди всё же добавляет накладные расходы. Если же вас устраивает пул с неограниченной
+         вместимостью,
+         то <code class="sText">ConcurrentQueue&lt;T&gt;</code> — хорошая структура для этой задачи.
+      </p>
+
+      <pre class="table">
+         Per core data structures:
+         |                       Pool |     Mean |
+         |           BoundedQueuePool |    33 ms |
+         |            ConcurrentQueue |    33 ms |
+         |                     Shared |    33 ms |
+         |    ConcurrentQueue+Counter |    33 ms |
+         
+         (ProcessorCount / 8) data structures:
+         |                    Pool |        Mean | Lock Contentions |
+         |------------------------ |------------:|-----------------:|
+         |        BoundedQueuePool |       65 ms |                - |
+         |         ConcurrentQueue |       65 ms |                - |
+         |          Shared_Limited |      118 ms |            354.4 |
+         | ConcurrentQueue+Counter |       75 ms |                - |
+</pre>
+
+      <h3 class="mineTitle">Выводы</h3>
+
+      <p>
+         Пулинг объектов помогает снизить аллокации и нагрузку на сборщик мусора, но сами пулы — сложные структуры
+         данных, и неудачная или неподходящая для конкретного профиля нагрузки реализация пула может испортить
+         производительность. Так, даже оставаясь в рамках стандартных реализаций пулов, для небольших массивов,
+         нужных
+         на короткое время предпочтительно использовать масштабирующийся <code
+            class="sText">ArrayPool&lt;T&gt;.Shared</code>, а для больших
+         массивов —
+         пул, созданный через <code class="sText"> ArrayPool&lt;T&gt;.Create(..., ...)</code> как более вместительный и
+         экономный в плане
+         отсутствия
+         разделения по потокам.</p>
+
+      <p>
+         Также, если вам захотелось запулить все объекты в программе — подумайте дважды. Избыточный пулинг
+         значительно
+         усложняет код, особенно когда появляется ручной подсчёт ссылок и другие нетривиальные способы трекинга
+         жизненного цикла объектов. Всё это не избавляет от риска использовать уже возвращённый в пул объект и не
+         заметить этого. В некоторых случаях, проще положиться на сборщик мусора, или снизить число аллокаций
+         другими
+         инструментами, будто структуры, <code class="sText"> stackalloc </code>, <code
+            class="sText"> Span/Memory&lt;T&gt;</code>, или scatter-gather IO.
+      </p>
+      <p>
+         Кроме пулинга массивов и объектов есть и более сложные случаи, например динамические структуры данных —
+         листы,
+         хэш-таблицы; переиспользование объектов внутри concurrent структур данных. Но это уже совсем другая
+         история.
+      </p>
+
+      <h3 class="mineTitle">Ссылки</h3>
+
+      <ul>
+         <li><code class="bText"> Репозиторий с бенчмарками </code></li>
+         <li><code class="bText"> Мой канал (блог о .NET)</code></li>
+      </ul>
+
+      <h3 class="webT">Теги:<code class="bText">.NETc#memory managementpoolingpool</code> </h3>
+      <h3 class="webT">Хабы:<code class="bText">Высокая производительностьПрограммирование.NETC#</code> </h3>
+
+
+
+   </div>
+</body>
+
+</html>
